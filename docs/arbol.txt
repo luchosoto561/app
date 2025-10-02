@@ -1,0 +1,72 @@
+﻿Ãrbol generado: 2025-09-22 14:49:41
+Folder PATH listing
+Volume serial number is 2C59-99D1
+C:.
+|   .env
+|   alembic.ini
+|   db.py
+|   main.py
+|   
++---.vscode
+|       settings.json
+|       
++---alembic
+|   |   env.py
+|   |   README
+|   |   script.py.mako
+|   |   
+|   +---versions
+|   |   |   f19c516bcfbe_create_google_credentials.py
+|   |   |   
+|   |   \---__pycache__
+|   |           f19c516bcfbe_create_google_credentials.cpython-312.pyc
+|   |           
+|   \---__pycache__
+|           env.cpython-312.pyc
+|           
++---API
+|   |   auth_google.py
+|   |   whatsApp.py
+|   |   
+|   \---__pycache__
+|           auth_google.cpython-312.pyc
+|           whatsApp.cpython-312.pyc
+|           
++---core
+|   |   config.py
+|   |   google_oauth.py
+|   |   
+|   \---__pycache__
+|           config.cpython-312.pyc
+|           google_oauth.cpython-312.pyc
+|           test.cpython-312.pyc
+|           __init__.cpython-312.pyc
+|           
++---docs
+|       arbol.txt
+|       siguientesPasos.txt
+|       
++---models
+|   |   base.py
+|   |   google_credential.py
+|   |   
+|   \---__pycache__
+|           base.cpython-312.pyc
+|           google_credential.cpython-312.pyc
+|           
++---scripts
+|       gen-tree.ps1
+|       
++---services
+|   |   google_auth_Store.py
+|   |   google_calendar.py
+|   |   whatsapp.py
+|   |   
+|   \---__pycache__
+|           google_auth_Store.cpython-312.pyc
+|           whatsapp.cpython-312.pyc
+|           
+\---__pycache__
+        db.cpython-312.pyc
+        main.cpython-312.pyc
+        

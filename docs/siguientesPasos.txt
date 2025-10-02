@@ -1,0 +1,5 @@
+23/9 -> termine entiendo que todo lo necesario para en todo momento estar conectado al calendar del usuario, cuestiones importantes que me suenan:
+- ver si en todos los errores que se tiran se reenvia el link, porque creo que habia errores digamos en los cuales le mandaba mensaje de intentelo mas tarde, pero siento que yo lo que tengo que garantizar es que cuando se prosiga se tiene el acceso a la cuenta de google.
+- ver si luego implementar que se pueda de repente cambiar de cuenta de google, porque de momento solo puede elegir cuando se le manda el link
+- en la base de datos tengo una columna con un numero de telefono y una UNICA cuenta de google, ver si quiero hacer (tal vez no para la version 1) que se pueda tener mas de una cuenta de google asociada al usuario
+SEGUIR -> entiendo que ahora me conviene repasar todo lo hecho y dejarlo documentado a la perfeccion, ademas de dejarlo optimizado y sobre todo entenderlo. Si es necesario (SI LO ES) estudiar los conceptos que no entiendo y me interesen, por ejemplo los errores en https (en try_refresh se ven muchos).
