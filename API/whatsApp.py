@@ -1,17 +1,18 @@
-"""comunicacion HTTP con whatsApp"""
+from __future__ import annotations
+
 import os
 import time
 from urllib.parse import quote_plus
-
 from fastapi import APIRouter, Request, Response, Depends
 from fastapi.responses import PlainTextResponse
 from sqlalchemy.ext.asyncio import AsyncSession
-
 from db import get_session
 from services.google_auth_store import get_google_credentials
 from services.whatsapp import send_text  # usa tu wrapper a la API de Meta
-
 from services.google_auth_store import ensure_access
+from sqlalchemy import select
+from models.conversation_state import ConversationState
+from services.intent_detector import detect_intent
 
 router = APIRouter()
 
@@ -110,11 +111,123 @@ async def receive(request: Request, session: AsyncSession = Depends(get_session)
         )
         return Response(status_code=200)
 
+    # -----------------------------------------------------------------------------------------------------------------------
     # 2c) Si está todo OK (token vigente o recién refrescado), seguí con la intención del usuario
-    # todo: enrutar por intención (crear / consultar / actualizar / eliminar evento)
-    # Por ahora, solo respondemos que está todo listo.
-    await send_text(
-        to_phone=phone,
-        body="¡Listo! Ya tengo acceso a tu calendario. ¿Qué querés hacer? (crear/consultar/actualizar/eliminar)",
+    
+    # 2c.1) Extraer texto del mensaje (si no viene, tratamos como cadena vacía)
+    message_text = ""
+    try:
+        msg_obj = messages[0]
+        if msg_obj.get("type") == "text":
+            message_text = (msg_obj.get("text", {}) or {}).get("body", "") or ""
+        else:
+            # Otros tipos (audio, imagen, etc.) por ahora no aportan a intención
+            message_text = ""
+    except Exception:
+        message_text = ""
+
+    # 2c.2) Obtener/crear estado de conversación del usuario
+    result = await session.execute(
+        select(ConversationState).where(ConversationState.whatsapp_phone == phone)
     )
-    return Response(status_code=200)
+    state: ConversationState | None = result.scalar_one_or_none()
+    if state is None:
+        state = ConversationState(
+            whatsapp_phone=phone,
+            intent_actual=None,
+            slots_json={},            # empezamos vacío
+            pending_intent=None,
+            pending_message=None,
+        )
+        session.add(state)
+        # se guardan los cambios realmente en la base de datos
+        await session.commit()
+        # vuelve a leer desde la base esa fila y actualiza el objeto en memoria con lo que quedo finalmente
+        await session.refresh(state)
+
+    # 2c.3) Si hay un cambio de intención pendiente, resolvemos con un sí/no simple
+    if state.pending_intent:
+        normalized = (message_text or "").strip().lower()
+        affirmatives = {"si", "sí", "dale", "ok", "okay", "correcto", "affirmative", "de una"}
+        negatives   = {"no", "mejor no", "nop"}
+
+        if normalized in affirmatives:
+            # Confirmó el cambio: aplicamos nueva intención y reinyectamos el mensaje que la disparó
+            state.intent_actual = state.pending_intent
+            state.slots_json = {}  # al cambiar de intención, reseteamos slots
+            state.pending_intent = None
+            await session.commit()
+
+            # Avisamos y pedimos datos (los slots se implementan después)
+            await send_text(
+                to_phone=phone,
+                body=f"Perfecto, cambiamos a *{state.intent_actual.replace('_', ' ').title()}*. Contame los detalles."
+            )
+            return Response(status_code=200)
+
+        elif normalized in negatives:
+            # Rechazó el cambio: limpiamos pendientes y seguimos con la intención actual
+            state.pending_intent = None
+            state.pending_message = None
+            await session.commit()
+            await send_text(
+                to_phone=phone,
+                body=f"Seguimos con *{(state.intent_actual or 'ninguna').replace('_', ' ').title()}*. ¿Me pasás los detalles?"
+            )
+            return Response(status_code=200)
+        else:
+            # No respondió claramente sí/no: repreguntamos
+            await send_text(
+                to_phone=phone,
+                body=f"¿Cambiamos a *{state.pending_intent.replace('_', ' ').title()}*? Respondé *sí* o *no*."
+            )
+            return Response(status_code=200)
+
+    # 2c.4) Detectar intención en el mensaje actual
+    detected = detect_intent(message_text)
+
+    if state.intent_actual is None:
+        # No hay intención vigente
+        if detected is None:
+            await send_text(
+                to_phone=phone,
+                body="¿Qué querés hacer? *crear*, *consultar disponibilidad*, *actualizar* o *cancelar*."
+            )
+            return Response(status_code=200)
+
+        # Seteamos intención y avanzamos (slots vienen después)
+        state.intent_actual = detected
+        state.slots_json = {}
+        await session.commit()
+        await send_text(
+            to_phone=phone,
+            body=f"Listo, vamos con *{detected.replace('_', ' ').title()}*. Contame los detalles."
+        )
+        return Response(status_code=200)
+
+    else:
+        # Hay intención vigente
+        if detected :
+            # Propuesta de cambio: guardamos pendiente y pedimos confirmación
+            state.pending_intent = detected
+            state.pending_message = message_text
+            await session.commit()
+            await send_text(
+                to_phone=phone,
+                body=f"Estás en *{state.intent_actual.replace('_', ' ').title()}*. ¿Querés cambiar a *{detected.replace('_', ' ').title()}*? (sí/no)"
+            )
+            return Response(status_code=200)
+        
+        """
+        aca tenemos una intencion clara por lo que ahora tenemos que llenar el json con los datos que pide calendar. 
+        """
+        # Sin cambio de intención: seguimos con la actual → próximamente: extracción de slots
+        # Por ahora, pedimos datos de manera genérica hasta que conectes el slots_extractor
+        await send_text(
+            to_phone=phone,
+            body=f"Continuemos con *{state.intent_actual.replace('_', ' ').title()}*. Decime fecha y hora (y lo que tengas) y lo proceso."
+        )
+        return Response(status_code=200)
+    
+    
+     
