@@ -1,11 +1,14 @@
 from __future__ import annotations
-
 import os
 import time
 from urllib.parse import quote_plus
+from typing import Any, Dict, List, Optional, Tuple 
+
+
 from fastapi import APIRouter, Request, Response, Depends
 from fastapi.responses import PlainTextResponse
 from sqlalchemy.ext.asyncio import AsyncSession
+
 from db import get_session
 from services.google_auth_store import get_google_credentials
 from services.whatsapp import send_text  # usa tu wrapper a la API de Meta
@@ -13,6 +16,9 @@ from services.google_auth_store import ensure_access
 from sqlalchemy import select
 from models.conversation_state import ConversationState
 from services.intent_detector import detect_intent
+from whatsApp import resolver_evento_id
+from services.slots_extractor import extraer_slots
+
 
 router = APIRouter()
 
@@ -22,10 +28,197 @@ VERIFY_TOKEN = os.getenv("VERIFY_TOKEN", "VERIFICATION_123")
 _LAST_LINK_SENT_AT: dict[str, float] = {}
 LINK_COOLDOWN_SECONDS = 120  # no re-enviar link más de 1 vez cada 2 min por número
 
+# --- Campos mínimos por intención (V1) ---
+# Nota: nombres de slots en español, simples y consistentes con tu slots_json.
 
-#verificacion inicial del webhook de whatsapp -> mostramos que somos nosotros
+MIN_REQUIRED_SLOTS = {
+    "crear": {
+        "obligatorios": ["titulo", "inicio"],
+        # Al menos uno de estos debe estar presente; el extractor valida esta alternativa.
+        "al_menos_uno_de": [["fin", "duracion"]],
+    },
+    "consultar_disponibilidad": {
+        # Ventana temporal a consultar
+        "obligatorios": ["desde", "hasta"],
+    },
+    "actualizar": {
+        # Identificación inequívoca del evento (id, o selección que resuelva a uno)
+        "obligatorios": ["selector_evento", "cambios"],  # "cambios" debe contener al menos un campo válido
+    },
+    "cancelar": {
+        "obligatorios": ["selector_evento"],
+    },
+}
+
+# (Opcional útil para copy UX al usuario)
+INTENT_LABEL = {
+    "crear": "Crear",
+    "consultar_disponibilidad": "Consultar disponibilidad",
+    "actualizar": "Actualizar",
+    "cancelar": "Eliminar",
+}
+
+# (Opcional: breve ayuda por intención, por si querés mostrar “qué falta” con texto claro)
+SLOT_LABEL = {
+    "titulo": "título",
+    "inicio": "inicio (fecha y hora)",
+    "fin": "fin (fecha y hora)",
+    "duracion": "duración",
+    "desde": "desde (fecha y hora)",
+    "hasta": "hasta (fecha y hora)",
+    "selector_evento": "identificador del evento",
+    "cambios": "cambios a aplicar",
+}
+
+
+async def aplicar_extraccion_de_slots(
+    *,
+    intent_actual: str,
+    message_text: str,
+    state_slots: Dict[str, Any],
+    pending_message: Optional[str],
+    calendar_client: Any,
+    timezone: str = "America/Argentina/Buenos_Aires",
+) -> Tuple[Dict[str, Any], List[str], bool]:
+    """
+    Orquesta la actualización de slots para la intención vigente en este turno.
+
+    - Combina `pending_message` (si existe) con `message_text`.
+    - Llama a `extraer_slots` para proponer valores normalizados.
+    - Integra propuestas a `state_slots` respetando la política V1:
+        * completar campos faltantes; no sobreescribir valores ya confirmados.
+        * en 'actualizar', mergear el objeto `cambios` si el extractor lo aporta.
+    - Si la intención es 'actualizar' o 'cancelar' e hiciste extracción de criterios
+      descriptivos, intenta resolver el `event_id` vía `resolver_evento_id`.
+    - Calcula y devuelve la lista de campos mínimos faltantes para poder ejecutar
+      la acción correspondiente.
+    
+    Retorna:
+        (slots_actualizados, faltantes, consumio_pending)
+    """
+    # 1) Preparar texto a procesar y marcar si consumimos el pending_message.
+    consumio_pending = False
+    texto_turno = (pending_message.strip() + "\n" + message_text.strip()).strip() if pending_message else message_text.strip()
+    if pending_message:
+        consumio_pending = True
+
+    # 2) Ejecutar extracción pura (sin I/O) sobre el texto del turno.
+    #    El extractor NO resuelve IDs ni llama a Calendar: solo propone datos.
+    slots_propuestos, criterios_evento, cambios = extraer_slots(
+        intent=intent_actual,
+        texto=texto_turno,
+        slots_actuales=state_slots,
+        timezone=timezone,
+    )
+
+    # 3) Merge determinista de propuestas → slots del estado (no pisar confirmados).
+    slots_actualizados: Dict[str, Any] = dict(state_slots) if state_slots else {}
+
+    # 3.a) Completar campos nuevos o vacíos (sin sobrescribir existentes no vacíos).
+    if isinstance(slots_propuestos, dict):
+        for k, v in slots_propuestos.items():
+            if v is None:
+                continue
+            if k not in slots_actualizados or slots_actualizados.get(k) in (None, "", [], {}):
+                slots_actualizados[k] = v
+
+    # 3.b) En 'actualizar', integrar `cambios` como dict mergeable.
+    if intent_actual == "actualizar" and isinstance(cambios, dict) and cambios:
+        base = slots_actualizados.get("cambios")
+        if not isinstance(base, dict):
+            slots_actualizados["cambios"] = dict(cambios)
+        else:
+            # Merge superficial: completa keys ausentes; no pisa valores existentes.
+            for ck, cv in cambios.items():
+                if ck not in base or base.get(ck) in (None, "", [], {}):
+                    base[ck] = cv
+
+    # 4) Si la intención requiere identificar un evento existente, intentar resolver event_id.
+    #    El extractor entrega criterios descriptivos; acá los usamos para buscar.
+    if intent_actual in ("actualizar", "cancelar") and "event_id" not in slots_actualizados:
+        if isinstance(criterios_evento, dict) and criterios_evento: 
+            event_id, opciones = await resolver_evento_id(
+                criterios=criterios_evento,
+                calendar_client=calendar_client,
+                timezone=timezone,
+                max_opciones=3,
+            )
+            if event_id:
+                slots_actualizados["event_id"] = event_id
+            else:
+                # Podés exponer las opciones al caller guardándolas transitoriamente en slots.
+                # El caller decidirá si las muestra y cómo pide la elección.
+                if opciones:
+                    slots_actualizados["opciones_evento"] = opciones
+
+    # 5) Calcular mínimos faltantes para poder ejecutar la acción.
+    #    Política V1: chequear explícitamente por intención.
+    faltantes: List[str] = []
+
+    if intent_actual == "crear":
+        # Obligatorios: inicio + (fin o duracion)
+        if not slots_actualizados.get("inicio"):
+            faltantes.append("inicio")
+        tiene_fin = bool(slots_actualizados.get("fin"))
+        tiene_duracion = bool(slots_actualizados.get("duracion"))
+        if not (tiene_fin or tiene_duracion):
+            faltantes.append("fin/duracion")  # copy compacto para UX
+
+        # Título como obligatorio “blando” en tu V1 si así lo definiste.
+        if not slots_actualizados.get("titulo"):
+            faltantes.append("titulo")
+
+    elif intent_actual == "consultar_disponibilidad":
+        if not slots_actualizados.get("desde"):
+            faltantes.append("desde")
+        if not slots_actualizados.get("hasta"):
+            faltantes.append("hasta")
+
+    elif intent_actual == "actualizar":
+        # Siempre necesitás identificar el evento y al menos un cambio concreto.
+        if not slots_actualizados.get("event_id"):
+            faltantes.append("event_id")
+        cambios_dict = slots_actualizados.get("cambios")
+        if not isinstance(cambios_dict, dict) or len(cambios_dict) == 0:
+            faltantes.append("cambios")
+
+    elif intent_actual == "cancelar":
+        if not slots_actualizados.get("event_id"):
+            faltantes.append("event_id")
+
+    # 6) Limpiar el pending_message solo si lo consumimos efectivamente.
+    #    (La limpieza en DB/estado la hace el caller usando el flag `consumio_pending`.)
+    return slots_actualizados, faltantes, consumio_pending
+
+async def resolver_evento_id(
+    *,
+    criterios: Dict[str, Any],
+    calendar_client: Any,
+    timezone: str = "America/Argentina/Buenos_Aires",
+    max_opciones: int = 3,
+) -> Tuple[Optional[str], List[Dict[str, Any]]]:
+    """
+    Resuelve un `event_id` a partir de criterios descriptivos (fecha/ventana, fragmento
+    de título, asistentes, hora aproximada, etc.). Si la búsqueda produce ambigüedad,
+    devuelve una lista corta de opciones para que el usuario elija.
+
+    Parámetros:
+      criterios: Diccionario con las pistas normalizadas para identificar el evento.
+      calendar_client: Cliente/servicio para consultar Google Calendar.
+      timezone: Zona horaria para interpretar rangos y fechas.
+      max_opciones: Límite de alternativas a devolver si hay múltiples coincidencias.
+
+    Retorna:
+      (event_id, opciones)
+        - event_id: string si se obtuvo una coincidencia única; None si no es unívoco.
+        - opciones: lista (máx. `max_opciones`) con candidatos {event_id, summary, start, end}
+                    cuando `event_id` es None; lista vacía si no hubo resultados.
+    """
+
+
 @router.get("/webhook")
 async def verify(request: Request):
+    """verificacion inicial del webhook de whatsapp -> mostramos que somos nosotros"""
     params = request.query_params
     mode = params.get("hub.mode")
     token = params.get("hub.verify_token")
@@ -152,13 +345,27 @@ async def receive(request: Request, session: AsyncSession = Depends(get_session)
         negatives   = {"no", "mejor no", "nop"}
 
         if normalized in affirmatives:
-            # Confirmó el cambio: aplicamos nueva intención y reinyectamos el mensaje que la disparó
+            # Confirmó el cambio: aplicamos nueva intención y reiniciamos slots
             state.intent_actual = state.pending_intent
-            state.slots_json = {}  # al cambiar de intención, reseteamos slots
-            state.pending_intent = None
+            state.slots_json = {}
             await session.commit()
 
-            # Avisamos y pedimos datos (los slots se implementan después)
+            # Procesar ahora el pending_message + mensaje actual
+            calendar_client = None  # o tu client real si aplica
+            slots_actualizados, faltantes, consumio_pending = await aplicar_extraccion_de_slots(
+                intent_actual=state.intent_actual,
+                message_text=message_text,
+                state_slots=state.slots_json or {},
+                pending_message=state.pending_message,
+                calendar_client=calendar_client,
+                timezone="America/Argentina/Buenos_Aires",
+            )
+            state.slots_json = slots_actualizados
+            state.pending_intent = None
+            if consumio_pending:
+                state.pending_message = None
+            await session.commit()
+
             await send_text(
                 to_phone=phone,
                 body=f"Perfecto, cambiamos a *{state.intent_actual.replace('_', ' ').title()}*. Contame los detalles."
@@ -197,8 +404,24 @@ async def receive(request: Request, session: AsyncSession = Depends(get_session)
 
         # Seteamos intención y avanzamos (slots vienen después)
         state.intent_actual = detected
-        state.slots_json = {}
+        
+        # actualizamos slots segun la intencion
+         
+        # (opcional) si vas a actualizar/cancelar, obtené un client real; si es crear/consultar podés pasar None
+        calendar_client = None
+
+        slots_actualizados, faltantes, consumio_pending = await aplicar_extraccion_de_slots(
+            intent_actual=state.intent_actual,
+            message_text=message_text,
+            state_slots=state.slots_json or {},
+            pending_message=None,
+            calendar_client=calendar_client,
+            timezone="America/Argentina/Buenos_Aires",
+        )
+        
+        state.slots_json = slots_actualizados
         await session.commit()
+        
         await send_text(
             to_phone=phone,
             body=f"Listo, vamos con *{detected.replace('_', ' ').title()}*. Contame los detalles."
@@ -207,7 +430,7 @@ async def receive(request: Request, session: AsyncSession = Depends(get_session)
 
     else:
         # Hay intención vigente
-        if detected :
+        if detected and detected != state.intent_actual:
             # Propuesta de cambio: guardamos pendiente y pedimos confirmación
             state.pending_intent = detected
             state.pending_message = message_text
@@ -218,9 +441,22 @@ async def receive(request: Request, session: AsyncSession = Depends(get_session)
             )
             return Response(status_code=200)
         
-        """
-        aca tenemos una intencion clara por lo que ahora tenemos que llenar el json con los datos que pide calendar. 
-        """
+        # (opcional) si la intención es 'actualizar' o 'cancelar', prepará el client real acá
+        calendar_client = None
+
+        slots_actualizados, faltantes, consumio_pending = await aplicar_extraccion_de_slots(
+            intent_actual=state.intent_actual,
+            message_text=message_text,
+            state_slots=state.slots_json or {},
+            pending_message=state.pending_message,
+            calendar_client=calendar_client,
+            timezone="America/Argentina/Buenos_Aires",
+        )
+        state.slots_json = slots_actualizados
+        if consumio_pending:
+            state.pending_message = None
+        await session.commit()
+        
         # Sin cambio de intención: seguimos con la actual → próximamente: extracción de slots
         # Por ahora, pedimos datos de manera genérica hasta que conectes el slots_extractor
         await send_text(

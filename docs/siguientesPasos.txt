@@ -1,5 +1,20 @@
 23/9 -> termine entiendo que todo lo necesario para en todo momento estar conectado al calendar del usuario, cuestiones importantes que me suenan:
-- ver si en todos los errores que se tiran se reenvia el link, porque creo que habia errores digamos en los cuales le mandaba mensaje de intentelo mas tarde, pero siento que yo lo que tengo que garantizar es que cuando se prosiga se tiene el acceso a la cuenta de google.
+- ver si en todos los errores que se tiran se reenvia el link, porque creo que habia errores digamos en los cuales le mandaba mensaje de intentelo mas tarde, pero siento que yo lo que tengo que garantizar es que
+cuando se prosiga se tiene el acceso a la cuenta de google.
 - ver si luego implementar que se pueda de repente cambiar de cuenta de google, porque de momento solo puede elegir cuando se le manda el link
 - en la base de datos tengo una columna con un numero de telefono y una UNICA cuenta de google, ver si quiero hacer (tal vez no para la version 1) que se pueda tener mas de una cuenta de google asociada al usuario
-SEGUIR -> entiendo que ahora me conviene repasar todo lo hecho y dejarlo documentado a la perfeccion, ademas de dejarlo optimizado y sobre todo entenderlo. Si es necesario (SI LO ES) estudiar los conceptos que no entiendo y me interesen, por ejemplo los errores en https (en try_refresh se ven muchos).
+SEGUIR -> entiendo que ahora me conviene repasar todo lo hecho y dejarlo documentado a la perfeccion, ademas de dejarlo optimizado y sobre todo entenderlo. Si es necesario (SI LO ES) estudiar los conceptos que no
+entiendo y me interesen, por ejemplo los errores en https (en try_refresh se ven muchos).
+
+
+22/10  -> estoy desarrollando la logica, me quede en la parte de captacion de la intencion, casi la termino, me falta ver que pasa cuando hay muchos mensajes que rompen la ruta que yo me imagino, de esto me di cuenta
+suponiendo que la persona quiere cambiar de intencion, se cambia de intencion, pero luego se tiene el mensaje que quiere que cambie de intencion (con info para llenar campos) y el actual (con info tambien), tendira que
+usar los dos para sacar info. para llenar los campos. ESTO ES LO QUE HABIA HECHO ANTES DE MUDARME Y NO LO HABIA ANOTADO QUE ASI QUE NO ES DE HOY
+
+22/10 -> estoy "terminando" el llenado del slots_json, una vez que termino esto me queda pasar al execute y el responder al cliente con un resumen de lo que se hizo. ME quede en API/whatsApp en el post /webhook llamo a la
+funcion aplicar_extraccion_de_slots que ya la implemente. Basicamente esta es una funcion que dado un texto que llega de un mensaje en el cual hay una intencion actual, no hay intencion pendiente y puede haber o no haber
+mensaje pendiente, te devuelve el slots_actuales, que se le pasa como parametro a la funcion, (entiendo que de la base de datos se va a sacar antes de llamar a la misma) actualizado, ademas te devuelve consumio_pending que
+no es necesario pero no importa de momento ignoralo y faltantes que entiendo que esto es para que se envie el mensaje correspondiente indicando cuales son los slots que faltan para terminar con la intencion actual.
+Por lo que entiendo entonces antes de llamar a la funcion tenemos que sacar el state_slots de la base de datos, ya la intencion actual, el mensaje de texto, pending_message los vamos a tener. 
+
+Me queda pulir bien lo hecho y hacer me queda la funcion extraer_slots y resolcer_evento_id
