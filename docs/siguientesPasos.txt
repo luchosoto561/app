@@ -11,10 +11,17 @@ entiendo y me interesen, por ejemplo los errores en https (en try_refresh se ven
 suponiendo que la persona quiere cambiar de intencion, se cambia de intencion, pero luego se tiene el mensaje que quiere que cambie de intencion (con info para llenar campos) y el actual (con info tambien), tendira que
 usar los dos para sacar info. para llenar los campos. ESTO ES LO QUE HABIA HECHO ANTES DE MUDARME Y NO LO HABIA ANOTADO QUE ASI QUE NO ES DE HOY
 
-22/10 -> estoy "terminando" el llenado del slots_json, una vez que termino esto me queda pasar al execute y el responder al cliente con un resumen de lo que se hizo. ME quede en API/whatsApp en el post /webhook llamo a la
-funcion aplicar_extraccion_de_slots que ya la implemente. Basicamente esta es una funcion que dado un texto que llega de un mensaje en el cual hay una intencion actual, no hay intencion pendiente y puede haber o no haber
+22/10 -> estoy "terminando" el llenado del slots_json, una vez que termino esto me queda pasar al execute y el responder al cliente con un resumen de lo que se hizo. 
+ME quede en API/whatsApp en el post /webhook llamo a la funcion aplicar_extraccion_de_slots que ya la implemente. Basicamente esta es una funcion que dado un texto que llega de un mensaje en el cual hay una intencion actual, no hay intencion pendiente y puede haber o no haber
 mensaje pendiente, te devuelve el slots_actuales, que se le pasa como parametro a la funcion, (entiendo que de la base de datos se va a sacar antes de llamar a la misma) actualizado, ademas te devuelve consumio_pending que
 no es necesario pero no importa de momento ignoralo y faltantes que entiendo que esto es para que se envie el mensaje correspondiente indicando cuales son los slots que faltan para terminar con la intencion actual.
 Por lo que entiendo entonces antes de llamar a la funcion tenemos que sacar el state_slots de la base de datos, ya la intencion actual, el mensaje de texto, pending_message los vamos a tener. 
 
-Me queda pulir bien lo hecho y hacer me queda la funcion extraer_slots y resolcer_evento_id
+Me queda pulir bien lo hecho y hacer me queda la funcion extraer_slots y resolver_evento_id
+
+23/10 -> envio los mensajes correctamente, pero todavia no estoy viendo del todo claro el resolver_evento_id. 
+24/10 -> realice el webhook, principalmente ya llamo en cada caso luego de la funcion aplicar_extraccion_de_slots al ejecutar si es que tiene que ejecutar, o envio el mensaje con los pendientes, o si tienen que haber opciones
+porque estamos hablando de un actualizar o cancelar, envio las opciones. Luego manejo que cuando se le listen las opciones y me responda el usuario, que se carge el id de la opcion qeu eligio correctamente. Falta implementar 
+resolcer_evento_id que tengo que meterme bastante a fondo con el tema de calendar_client, el tema es que para esto siento que me conviene meterme cuando realice el execute ya que tambien voy a necesitarlo ahi. Ademas me falta el 
+extraer_slots que no lo implemente.
+Por otro lado siento que el webhook me quedo muy largo y lo puedo modularizar.
